@@ -23,34 +23,7 @@ CloudWatch alarms take **1 to 5 minutes** to evaluate—far too slow to stop a r
 ## 🏗️ Architecture
 
 ```mermaid
-flowchart TD
-    classDef client fill:#1E293B,stroke:#475569,stroke-width:1px,color:#F8FAFC;
-    classDef dataPlane fill:#0C4A6E,stroke:#0284C7,stroke-width:1.5px,color:#F0F9FF;
-    classDef storage fill:#78350F,stroke:#D97706,stroke-width:1.5px,color:#FFFBEB;
-    classDef sfn fill:#4C1D95,stroke:#8B5CF6,stroke-width:1.5px,color:#F5F3FF;
-    classDef control fill:#064E3B,stroke:#059669,stroke-width:1.5px,color:#ECFDF5;
-
-    subgraph DATA_PLANE["1. Data Plane & Detection"]
-        Client["Workload Telemetry"]:::client -->|"POST /telemetry"| HttpApi["HTTP API Gateway"]:::dataPlane
-        HttpApi --> IngestFn["Ingestion Lambda"]:::dataPlane
-        IngestFn -->|"Atomic ADD :val"| DDB_Vel[("DynamoDB Velocity Table<br/>(24h TTL)")]:::storage
-        IngestFn -->|"Rate > 50 req/min"| SFN["Step Functions Standard"]:::sfn
-    end
-
-    subgraph CONTAINMENT["2. Autonomous Containment & Autopsy"]
-        SFN --> QFn["Quarantine Lambda<br/>(PutFunctionConcurrency = 0)"]:::sfn
-        QFn --> NotifyFn["Notify & Presign Lambda"]:::sfn
-        NotifyFn -->|"Archive Autopsy"| S3_Autopsy[("S3 Forensics Bucket<br/>(SigV4 Link)")]:::storage
-        NotifyFn --> WaitToken["State Machine Paused<br/>(waitForTaskToken)"]:::sfn
-    end
-
-    subgraph CONTROL_PLANE["3. Control Plane & Remediation"]
-        Admin["Admin / Dashboard"]:::client -->|"POST /action (x-api-key)"| RestApi["REST API Gateway"]:::control
-        RestApi --> CallbackFn["Callback Lambda"]:::control
-        CallbackFn -->|"SendTaskSuccess"| WaitToken
-        WaitToken --> RestoreFn["Restore Lambda<br/>(DeleteFunctionConcurrency)"]:::sfn
-        RestoreFn --> DDB_Inc[("DynamoDB Incident Table")]:::storage
-    end
+<img> mermaid-diagram.svg </img>
 ```
 
 ---
