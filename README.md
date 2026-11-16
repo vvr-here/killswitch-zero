@@ -11,6 +11,7 @@
 ---
 
 ## ⚡ Overview
+
 CloudWatch alarms take **1 to 5 minutes** to evaluate—far too slow to stop a recursive Lambda loop running at 1,000 req/sec from causing a catastrophic AWS bill.
 
 **KillSwitch Zero** stops runaway loops in **<200 milliseconds** with **$0.00 idle cost**:
@@ -22,10 +23,9 @@ CloudWatch alarms take **1 to 5 minutes** to evaluate—far too slow to stop a r
 
 ## 🏗️ Architecture
 
-``
-<img src="docs/mermaid-diagram.svg" alt="diagram" width="200">
-
-```
+<p align="center">
+  <img src="docs/mermaid-diagram.svg" alt="KillSwitch Zero Architecture Diagram" width="800">
+</p>
 
 ---
 
@@ -69,7 +69,7 @@ aws s3 sync frontend/ s3://<DashboardBucketName>/
 ## ⚡ Demo & Verification
 
 ### 1. Instant Offline Sandbox Mode
-Double-click `frontend/index.html` in your browser:
+Open `frontend/index.html` directly in your browser:
 * Click **Baseline Telemetry (5 req)**: Observe normal green baseline.
 * Click **Trigger Recursive Storm (100 req)**: Concurrency clamps to `0 (LOCKED)`, ambient spotlight halo turns red, and the forensic autopsy modal unlocks.
 * Click **Authorize Restore**: Circuit breaker resets to `STANDBY`.
@@ -126,4 +126,5 @@ sam delete --stack-name killswitch-zero
 ---
 
 ## 📄 License
+
 [MIT](LICENSE)
