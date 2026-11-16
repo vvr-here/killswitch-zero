@@ -110,25 +110,33 @@ python scripts/simulate_burst.py <HttpIngestApiUrl> 100
 ## 📁 Project Structure
 
 ```text
-skill-builder/
-├── template.yaml                  # Master SAM IaC (17 Serverless resources)
-├── backend/                       # Python 3.12 Lambda microservices
-│   ├── ingestion/                 # Tumbling window atomic counter & trigger
-│   ├── quarantine/                # Concurrency clamp (PutFunctionConcurrency=0)
-│   ├── notify_presign/            # S3 autopsy JSON writer & SigV4 signer
-│   ├── callback/                  # TaskToken resume dispatcher (x-api-key)
-│   ├── restore/                   # Concurrency brake release
-│   ├── status/                    # Real-time state inspector
-│   └── dummy_rogue/               # Simulated workload target
+killswitch-zero/
+├── README.md
+├── LICENSE
+├── template.yaml
+│
+├── backend/
+│   ├── ingestion/
+│   ├── quarantine/
+│   ├── notify_presign/
+│   ├── callback/
+│   ├── restore/
+│   ├── status/
+│   └── dummy_rogue/
+│
 ├── orchestration/
-│   └── killswitch.asl.json        # Step Functions ASL with waitForTaskToken
+│   └── killswitch.asl.json
+│
 ├── frontend/
-│   └── index.html                 # Linear Charcoal Command Center (Zero-build)
+│   └── index.html
+│
 ├── scripts/
-│   └── simulate_burst.py          # Synthetic loop storm simulator
+│   └── simulate_burst.py
+│
 └── docs/
-    ├── ARCHITECTURE.md            # In-depth architectural & IAM specifications
-    └── SUBMISSION_PACKAGE.md      # Hackathon submission package & video script
+    ├── ARCHITECTURE.md
+    ├── SUBMISSION_PACKAGE.md
+    └── mermaid.png
 ```
 
 ---
