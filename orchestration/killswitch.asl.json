@@ -1,0 +1,127 @@
+{
+  "Comment": "KillSwitch Zero: Standard state machine orchestrating blast-radius quarantine and human-in-the-loop remediation",
+  "StartAt": "EmergencyQuarantine",
+  "States": {
+    "EmergencyQuarantine": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${QuarantineFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.quarantine_result",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error_info",
+          "Next": "HandleStateFailure"
+        }
+      ],
+      "Next": "NotifyAndPresignAutopsy"
+    },
+    "NotifyAndPresignAutopsy": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${NotifyPresignFunctionArn}",
+        "Payload": {
+          "execution_id.$": "$$.Execution.Id",
+          "taskToken.$": "$$.Task.Token",
+          "incident_id.$": "$.quarantine_result.Payload.incident_id",
+          "target_function.$": "$.target_function",
+          "burst_velocity.$": "$.burst_velocity",
+          "quarantine_timestamp.$": "$.quarantine_result.Payload.timestamp"
+        }
+      },
+      "ResultPath": "$.human_decision",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error_info",
+          "Next": "HandleStateFailure"
+        }
+      ],
+      "Next": "EvaluateDecision"
+    },
+    "EvaluateDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.human_decision.action",
+          "StringEquals": "RESTORE",
+          "Next": "ExecuteRestore"
+        },
+        {
+          "Variable": "$.human_decision.action",
+          "StringEquals": "TERMINATE",
+          "Next": "ExecuteLockdown"
+        }
+      ],
+      "Default": "ExecuteLockdown"
+    },
+    "ExecuteRestore": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RestoreFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.restore_result",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error_info",
+          "Next": "HandleStateFailure"
+        }
+      ],
+      "Next": "IncidentResolvedSuccess"
+    },
+    "ExecuteLockdown": {
+      "Type": "Pass",
+      "Parameters": {
+        "status": "LOCKED_DOWN_PERMANENT",
+        "message": "Admin confirmed permanent quarantine. Target function concurrency remains clamped to 0."
+      },
+      "ResultPath": "$.lockdown_result",
+      "Next": "IncidentResolvedSuccess"
+    },
+    "IncidentResolvedSuccess": {
+      "Type": "Pass",
+      "End": true
+    },
+    "HandleStateFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${IncidentTableName}",
+        "Item": {
+          "IncidentId": {
+            "S.$": "$$.Execution.Id"
+          },
+          "Status": {
+            "S": "WORKFLOW_ERROR"
+          },
+          "ErrorMessage": {
+            "S.$": "$.error_info.Cause"
+          },
+          "Timestamp": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.db_error_result",
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Cause": "KillSwitch state machine encountered an unhandled task failure.",
+      "Error": "KillSwitchWorkflowError"
+    }
+  }
+}

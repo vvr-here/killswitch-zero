@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>KillSwitch Zero — Serverless Circuit Breaker</title>
+
+  <!-- Geist Sans & Geist Mono by Vercel -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/core.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/mono.css">
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons via CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Geist"', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+            mono: ['"Geist Mono"', 'monospace']
+          },
+          colors: {
+            palette: {
+              bg: '#0A0A0A',
+              card: '#121212',
+              cardHover: '#171717',
+              subtle: '#191919',
+              border: 'rgba(255, 255, 255, 0.08)',
+              borderHover: 'rgba(255, 255, 255, 0.16)',
+              heading: '#F5F5F7',
+              body: '#A1A1AA',
+              caption: '#71717A',
+              accent: '#38BDF8',
+              violet: '#A78BFA',
+              emerald: '#34D399',
+              rose: '#FB7185'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Dark Mode Typography & Top Spotlight (Radial Ambient Halo) */
+    body {
+      background-color: #0A0A0A;
+      background-image: radial-gradient(
+        ellipse 80% 50% at 50% -20%,
+        rgba(56, 189, 248, 0.08),
+        transparent 70%
+      );
+      background-attachment: fixed;
+      color: #A1A1AA;
+      letter-spacing: 0.015em;
+      line-height: 1.65;
+      font-weight: 400;
+      transition: background-image 0.6s ease;
+    }
+
+    /* Ambient Rose Halo on Active Quarantine Breach */
+    body.quarantine-engaged {
+      background-image: radial-gradient(
+        ellipse 80% 50% at 50% -20%,
+        rgba(251, 113, 133, 0.12),
+        transparent 70%
+      );
+    }
+
+    h1, h2, h3, h4 {
+      color: #F5F5F7;
+      letter-spacing: -0.01em;
+    }
+
+    /* Minimalist Scrollbar */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* ========================================================================= */
+    /* FEATURE CARDS: ANIMATED BEAM BORDER STYLING (Aceternity / Vercel Pattern) */
+    /* ========================================================================= */
+    @keyframes border-beam-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .feature-card {
+      position: relative;
+      border-radius: 0.75rem; /* 12px */
+      padding: 1px;
+      background: rgba(255, 255, 255, 0.07);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.2s ease;
+    }
+
+    /* Rotating conic beam */
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      inset: -150%;
+      background: conic-gradient(
+        from 90deg at 50% 50%,
+        transparent 0deg,
+        transparent 280deg,
+        rgba(56, 189, 248, 0.35) 330deg,
+        rgba(167, 139, 250, 0.5) 350deg,
+        transparent 360deg
+      );
+      animation: border-beam-spin 8s linear infinite;
+      z-index: 0;
+      opacity: 0.4;
+      transition: opacity 0.3s ease;
+    }
+
+    .feature-card:hover::before {
+      opacity: 1;
+      animation-duration: 4s;
+    }
+
+    /* Quarantined State: Crimson Warning Beam */
+    .feature-card.quarantine-active::before {
+      background: conic-gradient(
+        from 90deg at 50% 50%,
+        transparent 0deg,
+        transparent 260deg,
+        rgba(251, 113, 133, 0.7) 330deg,
+        rgba(239, 68, 68, 0.9) 350deg,
+        transparent 360deg
+      );
+      opacity: 1;
+      animation-duration: 3s;
+    }
+
+    /* Inner Content Container */
+    .feature-card-content {
+      position: relative;
+      z-index: 1;
+      background-color: #121212;
+      border-radius: calc(0.75rem - 1px);
+      height: 100%;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .tab-btn.active {
+      background: #191919;
+      color: #F5F5F7;
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+  </style>
+</head>
+
+<body class="min-h-screen antialiased selection:bg-palette-accent/20 selection:text-palette-heading">
+
+  <!-- Floating Toast Notifications -->
+  <div id="toastContainer" class="fixed bottom-5 right-5 left-5 sm:left-auto sm:w-80 z-50 flex flex-col space-y-2 pointer-events-none"></div>
+
+  <!-- Header Navigation -->
+  <header class="border-b border-palette-border bg-palette-bg/95 backdrop-blur-md sticky top-0 z-40">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-auto sm:h-16 py-3.5 sm:py-0 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-0">
+      
+      <!-- Brand & Identity (Left-Aligned strictly according to Rule 3) -->
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-3 text-left">
+          <div class="w-8 h-8 rounded-lg bg-palette-subtle border border-palette-border flex items-center justify-center text-palette-heading shrink-0">
+            <i data-lucide="shield" class="w-4 h-4 text-palette-accent"></i>
+          </div>
+          <div class="text-left">
+            <div class="flex items-center gap-2">
+              <span class="font-bold text-sm tracking-tight text-palette-heading">KillSwitch</span>
+              <span class="text-[11px] px-1.5 py-0.2 rounded bg-white/[0.05] text-palette-caption font-mono border border-palette-border">Zero</span>
+            </div>
+            <span class="text-[11px] text-palette-caption block -mt-0.5">Autonomous Serverless Circuit Breaker</span>
+          </div>
+        </div>
+
+        <!-- Mobile Sync Button -->
+        <button onclick="fetchStatus(true)" class="sm:hidden p-2 rounded-lg bg-palette-subtle text-palette-body border border-palette-border hover:text-palette-heading">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- Navigation Tabs (Horizontally scrollable on mobile) -->
+      <div class="flex items-center space-x-1 overflow-x-auto no-scrollbar py-1">
+        <button onclick="switchTab('monitor')" id="tab-monitor" class="tab-btn active px-3 py-1.5 rounded-lg text-xs font-medium border border-transparent transition shrink-0 flex items-center gap-1.5 text-palette-body hover:text-palette-heading">
+          <i data-lucide="activity" class="w-3.5 h-3.5"></i>
+          <span>Live Monitor</span>
+        </button>
+        <button onclick="switchTab('incidents')" id="tab-incidents" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-transparent transition shrink-0 flex items-center gap-1.5 text-palette-body hover:text-palette-heading">
+          <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+          <span>Autopsies</span>
+        </button>
+        <button onclick="switchTab('architecture')" id="tab-architecture" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-transparent transition shrink-0 flex items-center gap-1.5 text-palette-body hover:text-palette-heading">
+          <i data-lucide="layers" class="w-3.5 h-3.5"></i>
+          <span>Architecture</span>
+        </button>
+        <button onclick="switchTab('settings')" id="tab-settings" class="tab-btn px-3 py-1.5 rounded-lg text-xs font-medium border border-transparent transition shrink-0 flex items-center gap-1.5 text-palette-body hover:text-palette-heading">
+          <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+          <span>Settings</span>
+        </button>
+      </div>
+
+      <!-- Desktop Status Pill & Sync -->
+      <div class="hidden sm:flex items-center space-x-3">
+        <span id="modeBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-palette-subtle border border-palette-border text-palette-caption">
+          Sandbox Demo
+        </span>
+        <div id="statusPill" class="flex items-center space-x-2 px-2.5 py-1 rounded-full bg-palette-emerald/10 border border-palette-emerald/20 text-palette-emerald text-xs font-mono">
+          <span class="w-1.5 h-1.5 rounded-full bg-palette-emerald animate-pulse"></span>
+          <span id="statusPillText">STANDBY</span>
+        </div>
+        <button onclick="fetchStatus(true)" title="Sync status with AWS" class="p-1.5 rounded-lg bg-palette-subtle border border-palette-border text-palette-caption hover:text-palette-heading hover:border-palette-borderHover transition">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ========================================================================= -->
+  <!-- TAB 1: LIVE MONITOR (STRICT 12-COLUMN RESPONSIVE GRID LAYOUT) -->
+  <!-- ========================================================================= -->
+  <main id="view-monitor" class="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+
+    <!-- Active Quarantine Alert Banner (Feature Card with Animated Red Beam) -->
+    <div id="quarantineBanner" class="hidden feature-card quarantine-active">
+      <div class="feature-card-content p-5 sm:p-6 bg-gradient-to-r from-red-950/40 via-palette-card to-palette-card text-left">
+        <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 sm:gap-6">
+          <div class="flex items-start space-x-3 sm:space-x-4 text-left">
+            <div class="w-10 h-10 rounded-lg bg-palette-rose/10 border border-palette-rose/20 text-palette-rose flex items-center justify-center shrink-0 mt-0.5">
+              <i data-lucide="alert-circle" class="w-5 h-5"></i>
+            </div>
+            <div class="text-left">
+              <div class="flex items-center gap-2">
+                <span class="text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded bg-palette-rose/10 text-palette-rose border border-palette-rose/20 font-mono">
+                  CIRCUIT BREAKER ENGAGED
+                </span>
+                <span id="bannerIncidentId" class="text-xs text-palette-caption font-mono">INC-XXXXXX</span>
+              </div>
+              <h2 class="text-base sm:text-lg font-bold text-palette-heading mt-1">Target Lambda Concurrency Locked to 0</h2>
+              <p class="text-xs text-palette-body mt-1 max-w-xl leading-relaxed">
+                Execution velocity breached 50 req/min. Emergency brake locked concurrency in sub-seconds. All rogue invocations are dropping with HTTP 429.
+              </p>
+              <div class="mt-3">
+                <button onclick="openAutopsyModal()" class="text-xs font-medium text-palette-accent hover:text-white flex items-center gap-1.5 font-mono underline decoration-palette-borderHover underline-offset-4 transition">
+                  <span>View S3 Forensic Autopsy</span>
+                  <i data-lucide="external-link" class="w-3 h-3 text-palette-caption"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Human Remediation Cluster -->
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full lg:w-auto">
+            <button onclick="dispatchRemediation('RESTORE')" class="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-palette-emerald/10 hover:bg-palette-emerald/20 text-palette-emerald border border-palette-emerald/30 text-xs font-medium tracking-wide transition flex items-center justify-center gap-2">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i>
+              <span>Authorize Restore</span>
+            </button>
+            <button onclick="dispatchRemediation('TERMINATE')" class="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-palette-subtle hover:bg-white/[0.08] text-palette-body hover:text-palette-heading border border-palette-border text-xs font-medium tracking-wide transition flex items-center justify-center gap-2">
+              <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+              <span>Confirm Lockdown</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 1: 4 UNIFORM METRIC FEATURE CARDS (STRICT 4-COLUMN GRID / 12-COL SYSTEM) -->
+    <!-- Rule 1 & Rule 3: Uniform card boundaries, identical internal padding, consistent left-alignment -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+      
+      <!-- Card 1: Target Workload -->
+      <div class="feature-card">
+        <div class="feature-card-content p-5 text-left">
+          <div class="flex items-center justify-between text-palette-caption text-xs mb-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider">Target Workload</span>
+            <i data-lucide="cpu" class="w-4 h-4 text-palette-caption"></i>
+          </div>
+          <div>
+            <div id="targetFunctionName" class="text-base font-semibold text-palette-heading font-mono truncate">
+              RogueTargetFunction
+            </div>
+            <div class="text-[11px] text-palette-caption mt-2 font-mono">
+              AWS Lambda · Scale-to-Zero
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Concurrency Clamp -->
+      <div class="feature-card">
+        <div class="feature-card-content p-5 text-left">
+          <div class="flex items-center justify-between text-palette-caption text-xs mb-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider">Concurrency Clamp</span>
+            <i data-lucide="shield-check" class="w-4 h-4 text-palette-emerald"></i>
+          </div>
+          <div>
+            <div id="concurrencyMetric" class="text-2xl font-bold text-palette-emerald font-mono">
+              Unconstrained
+            </div>
+            <div id="concurrencySubtext" class="text-[11px] text-palette-caption mt-2 font-mono">
+              Emergency lock at 0
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Tumbling Velocity -->
+      <div class="feature-card">
+        <div class="feature-card-content p-5 text-left">
+          <div class="flex items-center justify-between text-palette-caption text-xs mb-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider">Tumbling Velocity</span>
+            <i data-lucide="activity" class="w-4 h-4 text-palette-accent"></i>
+          </div>
+          <div>
+            <div id="velocityMetric" class="text-2xl font-bold text-palette-heading font-mono">
+              0 <span class="text-xs font-normal text-palette-caption">req/min</span>
+            </div>
+            <div class="text-[11px] text-palette-caption mt-2 font-mono">
+              Safety Limit: 50 req/min
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Financial Burn Avoided -->
+      <div class="feature-card">
+        <div class="feature-card-content p-5 text-left">
+          <div class="flex items-center justify-between text-palette-caption text-xs mb-3">
+            <span class="font-mono text-[11px] uppercase tracking-wider">Burn Avoided</span>
+            <i data-lucide="dollar-sign" class="w-4 h-4 text-palette-violet"></i>
+          </div>
+          <div>
+            <div id="savingsMetric" class="text-2xl font-bold text-palette-heading font-mono">
+              $0.00 <span class="text-xs font-normal text-palette-caption">/ hr</span>
+            </div>
+            <div class="text-[11px] text-palette-caption mt-2 font-mono">
+              Recursive loop mitigation
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ROW 2: STRICT 12-COLUMN ALIGNMENT (8-COL CHART + 4-COL SIMULATOR) -->
+    <!-- Rule 4: Precise 12-Column Grid Alignment. Both cards share identical top and bottom boundaries. -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
+
+      <!-- Telemetry Chart Feature Card (8 Columns) -->
+      <div class="lg:col-span-8 feature-card">
+        <div class="feature-card-content p-5 sm:p-6 text-left">
+          <div>
+            <!-- Header strictly left-aligned with right-aligned legend (Rule 3) -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-5">
+              <div class="text-left">
+                <h3 class="text-xs font-bold text-palette-heading uppercase tracking-wider font-mono">Tumbling Window Telemetry</h3>
+                <p class="text-[11px] text-palette-caption mt-0.5">Atomic DynamoDB Ingestion Counter (60s Window with 24h TTL)</p>
+              </div>
+              <div class="flex items-center gap-3 text-xs font-mono text-palette-caption">
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-palette-accent"></span> Velocity
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2 h-0.5 bg-palette-rose"></span> Limit
+                </span>
+              </div>
+            </div>
+            <div class="h-56 sm:h-64 w-full">
+              <canvas id="velocityChart"></canvas>
+            </div>
+          </div>
+          <div class="mt-4 pt-3 border-t border-palette-border flex items-center justify-between text-[11px] text-palette-caption font-mono">
+            <span>Data Plane HTTP API Telemetry Stream</span>
+            <span class="text-palette-emerald">Idle Cost: $0.00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Simulator Feature Card (4 Columns) -->
+      <div class="lg:col-span-4 feature-card">
+        <div class="feature-card-content p-5 sm:p-6 text-left">
+          <div>
+            <div class="text-left mb-2">
+              <h3 class="text-xs font-bold text-palette-heading uppercase tracking-wider font-mono">Circuit Breaker Test</h3>
+              <p class="text-xs text-palette-body leading-relaxed mt-1">
+                Dispatch synthetic invocations into the ingestion API to verify sub-second concurrency clamping.
+              </p>
+            </div>
+
+            <!-- Identical button alignment and spacing (Rule 3 & Rule 5) -->
+            <div class="space-y-3 mt-5">
+              <button onclick="simulateTraffic(5)" class="w-full py-2.5 px-3 rounded-lg bg-palette-subtle hover:bg-white/[0.06] border border-palette-border text-palette-heading text-xs font-medium transition flex items-center justify-between text-left">
+                <span class="flex items-center gap-2">
+                  <i data-lucide="check" class="w-3.5 h-3.5 text-palette-emerald"></i>
+                  Baseline Telemetry (5 req)
+                </span>
+                <span class="text-[11px] font-mono text-palette-caption">Normal</span>
+              </button>
+
+              <button onclick="simulateTraffic(100)" class="w-full py-2.5 px-3 rounded-lg bg-palette-rose/10 hover:bg-palette-rose/20 border border-palette-rose/25 text-palette-rose text-xs font-medium transition flex items-center justify-between text-left">
+                <span class="flex items-center gap-2">
+                  <i data-lucide="zap" class="w-3.5 h-3.5 text-palette-rose"></i>
+                  Trigger Recursive Storm (100 req)
+                </span>
+                <span class="text-[10px] font-mono bg-palette-rose/20 px-1.5 py-0.5 rounded text-palette-rose">Sub-Second</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="pt-4 border-t border-palette-border text-[11px] text-palette-caption font-mono space-y-1 mt-6 text-left">
+            <div>• Orchestration: Step Functions Standard</div>
+            <div>• Emergency Brake: PutFunctionConcurrency = 0</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- TAB 2: INCIDENT AUTOPSIES (FULL 12-COLUMN ALIGNED TABLE FEATURE CARD) -->
+  <!-- ========================================================================= -->
+  <section id="view-incidents" class="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 hidden">
+    <div class="feature-card">
+      <div class="feature-card-content p-5 sm:p-6 text-left">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 text-left">
+          <div>
+            <h2 class="text-sm font-bold text-palette-heading font-mono">DynamoDB Incident Audit Trail</h2>
+            <p class="text-xs text-palette-body mt-0.5">Immutable forensic autopsies stored with 24-hour TTL auto-expiration</p>
+          </div>
+          <button onclick="fetchStatus(true)" class="px-3 py-1.5 rounded-lg bg-palette-subtle border border-palette-border text-palette-body hover:text-palette-heading text-xs font-mono flex items-center gap-2 transition self-start sm:self-auto">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>Sync Incidents</span>
+          </button>
+        </div>
+
+        <!-- Strict Table Alignment (Rule 1 & Rule 3) -->
+        <div class="overflow-x-auto -mx-5 sm:mx-0 px-5 sm:px-0">
+          <table class="w-full text-left text-xs font-mono min-w-[540px]">
+            <thead class="bg-palette-subtle text-palette-caption border-b border-palette-border text-[11px]">
+              <tr>
+                <th class="p-3">Incident ID</th>
+                <th class="p-3">Target Function</th>
+                <th class="p-3">Velocity</th>
+                <th class="p-3">Status</th>
+                <th class="p-3">Timestamp</th>
+                <th class="p-3 text-right">Report</th>
+              </tr>
+            </thead>
+            <tbody id="incidentsTableBody" class="divide-y divide-palette-border">
+              <tr>
+                <td colspan="6" class="p-8 text-center text-palette-caption">
+                  <i data-lucide="shield-check" class="w-8 h-8 mx-auto text-palette-caption mb-2"></i>
+                  <span>No active incidents. The circuit breaker is standing by.</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================================= -->
+  <!-- TAB 3: ARCHITECTURE (STRICT 4-COLUMN ALIGNED FEATURE CARDS) -->
+  <!-- ========================================================================= -->
+  <section id="view-architecture" class="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 hidden">
+    
+    <div class="feature-card">
+      <div class="feature-card-content p-5 sm:p-6 text-left">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-sm font-bold text-palette-heading font-mono">End-to-End Serverless Architecture</h2>
+          <span class="text-[11px] text-palette-caption font-mono">AWS SAM · Scale-to-Zero</span>
+        </div>
+        <p class="text-xs text-palette-body mb-6 leading-relaxed">
+          Event-driven circuit breaker that decouples high-speed telemetry ingestion from durable, human-in-the-loop task token orchestration.
+        </p>
+
+        <!-- 4-Column Grid System (Rule 4: Exact equal spans and consistent gutters) -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          
+          <div class="p-4 rounded-lg bg-palette-subtle border border-palette-border text-left">
+            <div class="text-[10px] font-mono text-palette-accent font-medium mb-1">01 / INGESTION</div>
+            <div class="text-xs font-bold text-palette-heading">Amazon API Gateway</div>
+            <p class="text-[11px] text-palette-body mt-2">HTTP API with open CORS. Sub-millisecond telemetry ingestion (POST /telemetry).</p>
+          </div>
+
+          <div class="p-4 rounded-lg bg-palette-subtle border border-palette-border text-left">
+            <div class="text-[10px] font-mono text-palette-violet font-medium mb-1">02 / VELOCITY</div>
+            <div class="text-xs font-bold text-palette-heading">Amazon DynamoDB</div>
+            <p class="text-[11px] text-palette-body mt-2">Atomic ADD counter on tumbling 60s window. 24-hour native TTL cleans up history.</p>
+          </div>
+
+          <div class="p-4 rounded-lg bg-palette-subtle border border-palette-border text-left">
+            <div class="text-[10px] font-mono text-palette-rose font-medium mb-1">03 / QUARANTINE</div>
+            <div class="text-xs font-bold text-palette-heading">AWS Lambda</div>
+            <p class="text-[11px] text-palette-body mt-2">Calls lambda:PutFunctionConcurrency to clamp reserved concurrency to 0.</p>
+          </div>
+
+          <div class="p-4 rounded-lg bg-palette-subtle border border-palette-border text-left">
+            <div class="text-[10px] font-mono text-palette-accent font-medium mb-1">04 / AUTOPSY & WAIT</div>
+            <div class="text-xs font-bold text-palette-heading">AWS Step Functions</div>
+            <p class="text-[11px] text-palette-body mt-2">Standard state machine uses waitForTaskToken for human approval at $0 idle cost.</p>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Security & Cost Breakdown: 2 Equal Columns (Rule 1 & Rule 4) -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+      
+      <div class="feature-card">
+        <div class="feature-card-content p-5 sm:p-6 text-left">
+          <h3 class="text-xs font-bold text-palette-heading uppercase tracking-wider font-mono mb-3">Least Privilege IAM Matrix</h3>
+          <ul class="text-xs text-palette-body space-y-2.5 font-mono">
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span>Zero AdministratorAccess. All Lambdas use scoped SAM policy templates.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span>Control Plane (POST /action) secured with API Key authorization.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span>S3 bucket is strictly private; fronted by CloudFront Origin Access Control (OAC).</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-card-content p-5 sm:p-6 text-left">
+          <h3 class="text-xs font-bold text-palette-heading uppercase tracking-wider font-mono mb-3">Scale-to-Zero Cost Model</h3>
+          <ul class="text-xs text-palette-body space-y-2.5 font-mono">
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span><strong>Idle Cost:</strong> $0.00/month. No EC2, NAT Gateways, or containers.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span><strong>DynamoDB:</strong> PAY_PER_REQUEST on-demand billing.</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <i data-lucide="check" class="w-4 h-4 text-palette-emerald shrink-0 mt-0.5"></i>
+              <span><strong>Step Functions:</strong> Standard workflow pauses hold zero active compute.</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- ========================================================================= -->
+  <!-- TAB 4: SETTINGS & SIMULATION LAB -->
+  <!-- ========================================================================= -->
+  <section id="view-settings" class="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 hidden">
+    <div class="feature-card">
+      <div class="feature-card-content p-5 sm:p-6 text-left">
+        <h2 class="text-sm font-bold text-palette-heading font-mono mb-2">Gateway Endpoints & Configuration</h2>
+        <p class="text-xs text-palette-body mb-6">
+          Configure your deployed AWS SAM endpoints below. Values are saved locally in your browser's localStorage.
+        </p>
+
+        <div class="space-y-4 max-w-xl text-xs font-mono text-left">
+          <div>
+            <label class="block text-palette-caption mb-1">Data Plane HTTP API (Ingestion Endpoint):</label>
+            <input type="text" id="ingestUrl" placeholder="https://{api-id}.execute-api.{region}.amazonaws.com/telemetry" class="w-full bg-palette-subtle border border-palette-border rounded-lg p-2.5 text-palette-heading focus:outline-none focus:border-palette-accent/40">
+          </div>
+          <div>
+            <label class="block text-palette-caption mb-1">Control Plane REST API (Base Management URL):</label>
+            <input type="text" id="controlUrl" placeholder="https://{api-id}.execute-api.{region}.amazonaws.com/prod" class="w-full bg-palette-subtle border border-palette-border rounded-lg p-2.5 text-palette-heading focus:outline-none focus:border-palette-accent/40">
+          </div>
+          <div>
+            <label class="block text-palette-caption mb-1">Management API Key (x-api-key):</label>
+            <input type="password" id="apiKey" placeholder="AWS API Key" class="w-full bg-palette-subtle border border-palette-border rounded-lg p-2.5 text-palette-heading focus:outline-none focus:border-palette-accent/40">
+          </div>
+
+          <div class="pt-2 flex flex-wrap items-center gap-3">
+            <button onclick="saveSettings()" class="w-full sm:w-auto px-4 py-2 rounded-lg bg-palette-heading hover:bg-white text-palette-bg font-medium text-xs transition">
+              Save Settings
+            </button>
+            <button onclick="fetchStatus(true)" class="w-full sm:w-auto px-4 py-2 rounded-lg bg-palette-subtle hover:bg-white/[0.06] text-palette-heading border border-palette-border text-xs transition">
+              Test Connection
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Responsive S3 Autopsy JSON Modal -->
+  <div id="autopsyModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+    <div class="feature-card max-w-2xl w-full border-palette-border shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <div class="feature-card-content flex flex-col h-full">
+        <div class="p-4 border-b border-palette-border flex items-center justify-between bg-palette-subtle">
+          <div class="flex items-center space-x-2">
+            <i data-lucide="file-text" class="w-4 h-4 text-palette-accent"></i>
+            <h3 class="text-xs font-bold text-palette-heading font-mono">S3 Incident Autopsy (SigV4 Signed)</h3>
+          </div>
+          <button onclick="closeAutopsyModal()" class="text-palette-caption hover:text-palette-heading p-1 rounded-lg">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <div class="p-4 overflow-y-auto font-mono text-xs text-palette-accent bg-palette-bg flex-1 text-left">
+          <pre id="autopsyJsonContent" class="whitespace-pre-wrap leading-relaxed">Loading report from Amazon S3...</pre>
+        </div>
+
+        <div class="p-3 border-t border-palette-border bg-palette-subtle flex items-center justify-between text-xs font-mono">
+          <span class="text-palette-caption text-[11px]">WORM compliant S3 object</span>
+          <button onclick="copyAutopsyJson()" class="px-3 py-1 rounded bg-palette-card hover:bg-palette-subtle text-palette-body text-xs transition border border-palette-border">
+            Copy JSON
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Logic -->
+  <script>
+    let velocityChart;
+    let activeIncident = null;
+    let currentAutopsyJson = null;
+
+    // Tab Navigation
+    function switchTab(tabId) {
+      const tabs = ['monitor', 'incidents', 'architecture', 'settings'];
+      tabs.forEach(t => {
+        const view = document.getElementById(`view-${t}`);
+        const btn = document.getElementById(`tab-${t}`);
+        if (t === tabId) {
+          view.classList.remove('hidden');
+          btn.classList.add('active');
+        } else {
+          view.classList.add('hidden');
+          btn.classList.remove('active');
+        }
+      });
+      lucide.createIcons();
+    }
+
+    // Toast System
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      
+      const borders = {
+        success: 'border-palette-emerald/40 text-palette-emerald',
+        error: 'border-palette-rose/40 text-palette-rose',
+        warning: 'border-palette-borderHover text-palette-heading',
+        info: 'border-palette-border text-palette-body'
+      };
+
+      toast.className = `p-3 rounded-lg bg-palette-card border text-xs font-mono shadow-2xl flex items-center gap-2 transition-all transform duration-300 translate-y-2 opacity-0 pointer-events-auto ${borders[type] || borders.info}`;
+      toast.innerHTML = `<span>${type === 'error' ? '!' : type === 'success' ? '✓' : '•'}</span> <span>${message}</span>`;
+      
+      container.appendChild(toast);
+      setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 10);
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'translate-y-2');
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    // Chart Initialization (Subtle Pastel Sky Line)
+    function initChart() {
+      const ctx = document.getElementById('velocityChart').getContext('2d');
+      const gradient = ctx.createLinearGradient(0, 0, 0, 220);
+      gradient.addColorStop(0, 'rgba(56, 189, 248, 0.12)');
+      gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+
+      velocityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: ['-5m', '-4m', '-3m', '-2m', '-1m', 'Now'],
+          datasets: [
+            {
+              label: 'Velocity (req/min)',
+              data: [0, 0, 0, 0, 0, 0],
+              borderColor: '#38BDF8',
+              borderWidth: 1.75,
+              backgroundColor: gradient,
+              fill: true,
+              tension: 0.3,
+              pointBackgroundColor: '#38BDF8',
+              pointRadius: 2
+            },
+            {
+              label: 'Threshold',
+              data: [50, 50, 50, 50, 50, 50],
+              borderColor: '#FB7185',
+              borderDash: [4, 4],
+              borderWidth: 1.5,
+              pointRadius: 0,
+              fill: false
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#121212',
+              borderColor: 'rgba(255, 255, 255, 0.08)',
+              borderWidth: 1,
+              titleFont: { family: 'Geist Mono', size: 11 },
+              bodyFont: { family: 'Geist Mono', size: 10 },
+              titleColor: '#F5F5F7',
+              bodyColor: '#A1A1AA'
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              suggestedMax: 120,
+              grid: { color: 'rgba(255, 255, 255, 0.03)' },
+              ticks: { color: '#71717A', font: { family: 'Geist Mono', size: 10 } }
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#71717A', font: { family: 'Geist Mono', size: 10 } }
+            }
+          }
+        }
+      });
+    }
+
+    // Settings Management
+    function loadSettings() {
+      const ingest = localStorage.getItem('killswitch_ingest') || '';
+      const control = localStorage.getItem('killswitch_control') || '';
+      const key = localStorage.getItem('killswitch_key') || '';
+
+      document.getElementById('ingestUrl').value = ingest;
+      document.getElementById('controlUrl').value = control;
+      document.getElementById('apiKey').value = key;
+
+      const badge = document.getElementById('modeBadge');
+      if (badge) {
+        if (ingest || control) {
+          badge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-palette-accent/10 border border-palette-accent/30 text-palette-accent';
+          badge.innerText = 'Live AWS';
+        } else {
+          badge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-palette-subtle border border-palette-border text-palette-caption';
+          badge.innerText = 'Sandbox Demo';
+        }
+      }
+    }
+
+    function saveSettings() {
+      localStorage.setItem('killswitch_ingest', document.getElementById('ingestUrl').value.trim());
+      localStorage.setItem('killswitch_control', document.getElementById('controlUrl').value.trim());
+      localStorage.setItem('killswitch_key', document.getElementById('apiKey').value.trim());
+      loadSettings();
+      showToast('Settings saved to localStorage', 'success');
+    }
+
+    function getEndpoints() {
+      return {
+        ingest: document.getElementById('ingestUrl').value.trim(),
+        control: document.getElementById('controlUrl').value.trim(),
+        key: document.getElementById('apiKey').value.trim()
+      };
+    }
+
+    // Status Fetching
+    async function fetchStatus(showNotification = false) {
+      const { control, key } = getEndpoints();
+      if (!control) {
+        if (showNotification) showToast('Configure Control API URL in Settings tab', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${control}/status`, {
+          headers: key ? { 'x-api-key': key } : {}
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        
+        renderStatus(data);
+        if (showNotification) showToast('State synchronized with AWS', 'success');
+      } catch (err) {
+        console.warn('Sync failed:', err);
+        if (showNotification) showToast(`Sync failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Status Rendering
+    function renderStatus(data) {
+      document.getElementById('targetFunctionName').innerText = data.target_function || 'RogueTargetFunction';
+      
+      const isQuarantined = data.concurrency_state === 'QUARANTINED_LOCKED_ZERO';
+      const pill = document.getElementById('statusPill');
+      const pillText = document.getElementById('statusPillText');
+      const concMetric = document.getElementById('concurrencyMetric');
+      const concSub = document.getElementById('concurrencySubtext');
+      const banner = document.getElementById('quarantineBanner');
+
+      if (isQuarantined) {
+        document.body.classList.add('quarantine-engaged');
+        pill.className = 'flex items-center space-x-2 px-2.5 py-1 rounded-full bg-palette-rose/10 border border-palette-rose/30 text-palette-rose text-xs font-mono';
+        pillText.innerText = 'QUARANTINED (0)';
+        concMetric.innerText = '0 (LOCKED)';
+        concMetric.className = 'text-2xl font-bold text-palette-rose font-mono';
+        concSub.innerText = 'All invocations dropped (429)';
+        banner.classList.remove('hidden');
+      } else {
+        document.body.classList.remove('quarantine-engaged');
+        pill.className = 'flex items-center space-x-2 px-2.5 py-1 rounded-full bg-palette-emerald/10 border border-palette-emerald/20 text-palette-emerald text-xs font-mono';
+        pillText.innerText = 'STANDBY';
+        concMetric.innerText = 'Unconstrained';
+        concMetric.className = 'text-2xl font-bold text-palette-emerald font-mono';
+        concSub.innerText = 'Emergency lock at 0';
+        banner.classList.add('hidden');
+      }
+
+      // Incidents Table
+      const tbody = document.getElementById('incidentsTableBody');
+      if (data.active_incidents && data.active_incidents.length > 0) {
+        activeIncident = data.active_incidents[0];
+        document.getElementById('bannerIncidentId').innerText = activeIncident.IncidentId;
+        
+        if (activeIncident.AutopsyUrl && activeIncident.AutopsyUrl !== 's3-upload-failed') {
+          currentAutopsyJson = activeIncident.AutopsyPayload || activeIncident;
+        }
+
+        document.getElementById('savingsMetric').innerHTML = `$${activeIncident.EstimatedSavingsPerHour || '120.00'} <span class="text-xs font-normal text-palette-caption">/ hr</span>`;
+
+        tbody.innerHTML = data.active_incidents.map(inc => {
+          const isAlert = inc.Status && (inc.Status.includes('QUARANTINE') || inc.Status.includes('AWAITING'));
+          const badgeClass = isAlert 
+            ? 'bg-palette-rose/15 text-palette-rose border border-palette-rose/25' 
+            : 'bg-palette-emerald/15 text-palette-emerald border border-palette-emerald/25';
+
+          return `
+            <tr class="hover:bg-palette-subtle transition">
+              <td class="p-3 text-palette-heading font-medium">${inc.IncidentId}</td>
+              <td class="p-3 text-palette-body">${inc.TargetFunction || 'RogueTargetFunction'}</td>
+              <td class="p-3 text-palette-heading font-medium">${inc.BurstVelocity || 0} req/min</td>
+              <td class="p-3">
+                <span class="px-2 py-0.5 rounded text-[10px] font-medium ${badgeClass}">
+                  ${inc.Status}
+                </span>
+              </td>
+              <td class="p-3 text-palette-caption">${inc.QuarantineTimestamp ? new Date(inc.QuarantineTimestamp).toLocaleTimeString() : 'N/A'}</td>
+              <td class="p-3 text-right">
+                ${inc.AutopsyUrl && inc.AutopsyUrl !== 's3-upload-failed' ? (
+                  inc.AutopsyUrl === 'local-autopsy-preview' ? `
+                    <button onclick="openAutopsyModal()" class="px-2.5 py-1 rounded bg-palette-subtle hover:bg-white/[0.06] text-palette-accent border border-palette-border inline-flex items-center gap-1 transition">
+                      <span>View</span>
+                      <i data-lucide="file-text" class="w-3 h-3 text-palette-caption"></i>
+                    </button>
+                  ` : `
+                    <a href="${inc.AutopsyUrl}" target="_blank" class="px-2.5 py-1 rounded bg-palette-subtle hover:bg-white/[0.06] text-palette-accent border border-palette-border inline-flex items-center gap-1 transition">
+                      <span>View</span>
+                      <i data-lucide="external-link" class="w-3 h-3 text-palette-caption"></i>
+                    </a>
+                  `
+                ) : '<span class="text-palette-caption">N/A</span>'}
+              </td>
+            </tr>
+          `;
+        }).join('');
+        lucide.createIcons();
+      }
+    }
+
+    // Interactive Local Simulation Engine (Runs instantly when endpoints are not configured)
+    let localVelocity = 0;
+    let localIncidents = [];
+
+    function runLocalSimulation(count) {
+      localVelocity += count;
+      document.getElementById('velocityMetric').innerHTML = `${localVelocity} <span class="text-xs font-normal text-palette-caption">req/min</span>`;
+      
+      const chartData = velocityChart.data.datasets[0].data;
+      chartData.shift();
+      chartData.push(localVelocity);
+      velocityChart.update();
+
+      if (localVelocity >= 50) {
+        const incidentId = 'INC-' + Math.random().toString(16).substring(2, 10).toUpperCase();
+        const nowIso = new Date().toISOString();
+        
+        currentAutopsyJson = {
+          title: "KillSwitch Zero: Forensic Incident Autopsy (Sandbox Simulation)",
+          incident_id: incidentId,
+          execution_id: `arn:aws:states:us-east-1:123456789012:execution:KillSwitchStateMachine:KillSwitch-${incidentId}`,
+          target_function: "KillSwitch-RogueTargetFunction",
+          incident_severity: "CRITICAL_BURST_BREACH",
+          quarantine_status: "CONCURRENCY_LOCKED_TO_ZERO",
+          blast_radius_contained: true,
+          metrics: {
+            burst_velocity_req_per_min: localVelocity,
+            normal_threshold_req_per_min: 50,
+            anomaly_factor: `${(localVelocity / 50).toFixed(1)}x`,
+            estimated_burn_prevented_per_hour_usd: 120.00
+          },
+          forensic_timeline: [
+            {
+              time: nowIso,
+              event: "ANOMALY_TRIGGERED",
+              detail: `Tumbling window detected ${localVelocity} invocations/min`
+            },
+            {
+              time: nowIso,
+              event: "CIRCUIT_BREAKER_ENGAGED",
+              detail: "Emergency quarantine applied via lambda:PutFunctionConcurrency(Reserved=0)"
+            },
+            {
+              time: nowIso,
+              event: "AUTOPSY_COMPILED",
+              detail: "Forensic package archived to Amazon S3; awaiting administrative authorization"
+            }
+          ],
+          remediation_options: [
+            { action: "RESTORE", description: "Lift concurrency clamp (lambda:DeleteFunctionConcurrency)" },
+            { action: "TERMINATE", description: "Confirm permanent lockdown; target remains clamped at 0" }
+          ],
+          generated_at: nowIso
+        };
+
+        const newInc = {
+          IncidentId: incidentId,
+          TargetFunction: 'KillSwitch-RogueTargetFunction',
+          BurstVelocity: localVelocity,
+          Status: 'QUARANTINED',
+          EstimatedSavingsPerHour: '120.00',
+          QuarantineTimestamp: nowIso,
+          AutopsyUrl: 'local-autopsy-preview',
+          AutopsyPayload: currentAutopsyJson
+        };
+
+        localIncidents.unshift(newInc);
+        renderStatus({
+          target_function: 'KillSwitch-RogueTargetFunction',
+          concurrency_state: 'QUARANTINED_LOCKED_ZERO',
+          active_incidents: localIncidents
+        });
+
+        showToast(`⚡ Threshold breached (${localVelocity} req/min)! Concurrency locked to 0`, 'error');
+      } else {
+        showToast(`Recorded ${count} baseline events (${localVelocity} req/min)`, 'success');
+      }
+    }
+
+    // Telemetry Simulation (Switches automatically between Live AWS and Sandbox Mode)
+    async function simulateTraffic(count) {
+      const { ingest } = getEndpoints();
+      if (!ingest) {
+        runLocalSimulation(count);
+        return;
+      }
+
+      showToast(`Dispatching ${count} synthetic events...`, 'info');
+
+      try {
+        const targetFn = document.getElementById('targetFunctionName').innerText;
+        const payload = {
+          invocations: count,
+          force: count >= 50
+        };
+        if (targetFn && targetFn !== 'RogueTargetFunction') {
+          payload.function_name = targetFn;
+        }
+
+        const res = await fetch(ingest, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await res.json();
+        
+        document.getElementById('velocityMetric').innerHTML = `${result.current_velocity} <span class="text-xs font-normal text-palette-caption">req/min</span>`;
+        
+        const chartData = velocityChart.data.datasets[0].data;
+        chartData.shift();
+        chartData.push(result.current_velocity);
+        velocityChart.update();
+
+        if (result.circuit_breaker_triggered) {
+          showToast(`🚨 Threshold breached! Concurrency locked to 0`, 'error');
+          setTimeout(() => fetchStatus(false), 800);
+        } else {
+          showToast(`Recorded ${count} events`, 'success');
+        }
+      } catch (err) {
+        showToast(`Simulation failed: ${err.message}`, 'error');
+      }
+    }
+
+    // Remediation Callback
+    async function dispatchRemediation(action) {
+      const { control, key } = getEndpoints();
+      const incidentId = document.getElementById('bannerIncidentId').innerText;
+
+      if (!control) {
+        // Local Sandbox Remediation
+        showToast(`[Sandbox Mode] Authorizing: ${action}...`, 'info');
+        if (action === 'RESTORE') {
+          localVelocity = 0;
+          if (localIncidents.length > 0) {
+            localIncidents[0].Status = 'RESOLVED_RESTORED';
+          }
+          renderStatus({
+            target_function: 'KillSwitch-RogueTargetFunction',
+            concurrency_state: 'STANDARD_UNLIMITED',
+            active_incidents: localIncidents
+          });
+          document.getElementById('velocityMetric').innerHTML = `0 <span class="text-xs font-normal text-palette-caption">req/min</span>`;
+          showToast(`✓ Circuit breaker restored. Concurrency unconstrained.`, 'success');
+        } else {
+          if (localIncidents.length > 0) {
+            localIncidents[0].Status = 'RESOLVED_TERMINATED';
+          }
+          renderStatus({
+            target_function: 'KillSwitch-RogueTargetFunction',
+            concurrency_state: 'QUARANTINED_LOCKED_ZERO',
+            active_incidents: localIncidents
+          });
+          showToast(`🔒 Permanent lockdown confirmed. Target remains at 0 concurrency.`, 'info');
+        }
+        return;
+      }
+
+      showToast(`Authorizing: ${action}...`, 'info');
+
+      try {
+        const res = await fetch(`${control}/action`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(key ? { 'x-api-key': key } : {})
+          },
+          body: JSON.stringify({
+            incident_id: incidentId,
+            action: action
+          })
+        });
+        const result = await res.json();
+        showToast(`Authorized: ${action}`, 'success');
+        setTimeout(() => fetchStatus(false), 1000);
+      } catch (err) {
+        showToast(`Remediation error: ${err.message}`, 'error');
+      }
+    }
+
+    // Autopsy Modal
+    function openAutopsyModal() {
+      const modal = document.getElementById('autopsyModal');
+      const content = document.getElementById('autopsyJsonContent');
+      if (currentAutopsyJson) {
+        content.innerText = JSON.stringify(currentAutopsyJson, null, 2);
+      } else {
+        content.innerText = 'No local autopsy loaded. Opening external link...';
+        if (activeIncident && activeIncident.AutopsyUrl) {
+          window.open(activeIncident.AutopsyUrl, '_blank');
+        }
+      }
+      modal.classList.remove('hidden');
+    }
+
+    function closeAutopsyModal() {
+      document.getElementById('autopsyModal').classList.add('hidden');
+    }
+
+    function copyAutopsyJson() {
+      const text = document.getElementById('autopsyJsonContent').innerText;
+      navigator.clipboard.writeText(text);
+      showToast('Copied JSON to clipboard', 'success');
+    }
+
+    window.onload = () => {
+      loadSettings();
+      lucide.createIcons();
+      initChart();
+      setInterval(() => fetchStatus(false), 10000);
+    };
+  </script>
+</body>
+</html>

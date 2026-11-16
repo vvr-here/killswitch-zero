@@ -1,0 +1,404 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  KillSwitch Zero: Master Serverless Runaway Bill & Loop Circuit Breaker.
+  Orchestrates real-time blast-radius containment, Standard Step Functions
+  waitForTaskToken human approval, CloudFront OAC dashboard, and immutable S3 forensics.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: killswitch-zero
+        LOG_LEVEL: INFO
+
+Resources:
+  # =========================================================================
+  # 1. STORAGE LAYER (DynamoDB Tumbling Windows & S3 Forensics)
+  # =========================================================================
+  VelocityTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Velocity'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: FunctionName
+          AttributeType: S
+        - AttributeName: Window_Minute
+          AttributeType: S
+      KeySchema:
+        - AttributeName: FunctionName
+          KeyType: HASH
+        - AttributeName: Window_Minute
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: TTL_Expiry
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  IncidentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-Incidents'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: IncidentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: IncidentId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: TTL_Expiry
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  ForensicBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Omit explicit BucketName to prevent uppercase stack name validation failures & naming collisions
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
+
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Omit explicit BucketName to prevent uppercase stack name validation failures & naming collisions
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # =========================================================================
+  # 2. EDGE & CLOUDFRONT (Origin Access Control & HTTPS Enforced)
+  # =========================================================================
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-OAC'
+        Description: 'OAC restricting S3 access strictly to CloudFront'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: 'KillSwitch Zero Static Dashboard Distribution'
+        Origins:
+          - Id: DashboardS3Origin
+            DomainName: !GetAtt DashboardBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: DashboardS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DashboardBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${DashboardBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}'
+
+  # =========================================================================
+  # 3. API GATEWAYS (Data Plane vs Control Plane Separation)
+  # =========================================================================
+  # Data Plane: Open CORS HTTP API for High-Speed Telemetry Ingestion
+  HttpIngestApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - '*'
+
+  # Control Plane: Secured REST API with API Key required for Management
+  ControlRestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      ApiKeySourceType: HEADER
+      Auth:
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub '${AWS::StackName}-ControlUsagePlan'
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+
+  # =========================================================================
+  # 4. TARGET ROGUE FUNCTION (Simulates recursive runaway loops)
+  # =========================================================================
+  RogueTargetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-RogueTargetFunction'
+      CodeUri: backend/dummy_rogue/
+      Handler: app.handler
+      Description: 'Simulated target function with intentional recursive loop capability for testing'
+
+  # =========================================================================
+  # 5. STEP FUNCTIONS STANDARD STATE MACHINE
+  # =========================================================================
+  KillSwitchStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      DefinitionUri: orchestration/killswitch.asl.json
+      DefinitionSubstitutions:
+        QuarantineFunctionArn: !GetAtt QuarantineFunction.Arn
+        NotifyPresignFunctionArn: !GetAtt NotifyPresignFunction.Arn
+        RestoreFunctionArn: !GetAtt RestoreFunction.Arn
+        IncidentTableName: !Ref IncidentTable
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref QuarantineFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotifyPresignFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RestoreFunction
+        - DynamoDBWritePolicy:
+            TableName: !Ref IncidentTable
+
+  # =========================================================================
+  # 6. SERVERLESS COMPUTE & LEAST-PRIVILEGE IAM LAMBDAS
+  # =========================================================================
+  # Ingestion Function: Atomic tumbling window counter + threshold breach detection
+  IngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-IngestionFunction'
+      CodeUri: backend/ingestion/
+      Handler: app.handler
+      Environment:
+        Variables:
+          VELOCITY_TABLE: !Ref VelocityTable
+          STATE_MACHINE_ARN: !Ref KillSwitchStateMachine
+          ROGUE_FUNCTION_NAME: !Ref RogueTargetFunction
+          BURST_THRESHOLD: '50'
+      Events:
+        TelemetryPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpIngestApi
+            Path: /telemetry
+            Method: POST
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VelocityTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt KillSwitchStateMachine.Name
+
+  # Quarantine Function: Scoped strictly to lambda:PutFunctionConcurrency
+  QuarantineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-QuarantineFunction'
+      CodeUri: backend/quarantine/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENT_TABLE: !Ref IncidentTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentTable
+        - Statement:
+            - Sid: AllowPutFunctionConcurrencyScoped
+              Effect: Allow
+              Action:
+                - lambda:PutFunctionConcurrency
+              Resource:
+                - !GetAtt RogueTargetFunction.Arn
+                - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+  # Restore Function: Scoped strictly to lambda:DeleteFunctionConcurrency
+  RestoreFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-RestoreFunction'
+      CodeUri: backend/restore/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENT_TABLE: !Ref IncidentTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentTable
+        - Statement:
+            - Sid: AllowDeleteFunctionConcurrencyScoped
+              Effect: Allow
+              Action:
+                - lambda:DeleteFunctionConcurrency
+              Resource:
+                - !GetAtt RogueTargetFunction.Arn
+                - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+  # Notify & Presign Function: Writes autopsy JSON + generates SigV4 presigned URL
+  NotifyPresignFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-NotifyPresignFunction'
+      CodeUri: backend/notify_presign/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENT_TABLE: !Ref IncidentTable
+          FORENSIC_BUCKET: !Ref ForensicBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentTable
+        - S3CrudPolicy:
+            BucketName: !Ref ForensicBucket
+
+  # Callback Function: Handles human decision from Control Plane (REST API)
+  CallbackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-CallbackFunction'
+      CodeUri: backend/callback/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENT_TABLE: !Ref IncidentTable
+      Events:
+        ActionEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ControlRestApi
+            Path: /action
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IncidentTable
+        - Statement:
+            - Sid: AllowSendTaskSuccessToStateMachine
+              Effect: Allow
+              Action:
+                - states:SendTaskSuccess
+                - states:SendTaskFailure
+              Resource: '*'
+
+  # Status Function: Secured endpoint for Dashboard UI to fetch metrics and incident records
+  StatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-StatusFunction'
+      CodeUri: backend/status/
+      Handler: app.handler
+      Environment:
+        Variables:
+          INCIDENT_TABLE: !Ref IncidentTable
+          VELOCITY_TABLE: !Ref VelocityTable
+          ROGUE_FUNCTION_NAME: !Ref RogueTargetFunction
+      Events:
+        StatusEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ControlRestApi
+            Path: /status
+            Method: GET
+            Auth:
+              ApiKeyRequired: true
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref IncidentTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref VelocityTable
+        - Statement:
+            - Sid: AllowGetFunctionConcurrencyScoped
+              Effect: Allow
+              Action:
+                - lambda:GetFunctionConcurrency
+              Resource:
+                - !GetAtt RogueTargetFunction.Arn
+                - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+# =========================================================================
+# 7. OUTPUTS
+# =========================================================================
+Outputs:
+  CloudFrontDashboardUrl:
+    Description: 'HTTPS Endpoint for the KillSwitch Zero Static Command Center'
+    Value: !Sub 'https://${DashboardDistribution.DomainName}'
+
+  HttpIngestApiUrl:
+    Description: 'Data Plane Ingestion Endpoint (POST /telemetry)'
+    Value: !Sub 'https://${HttpIngestApi}.execute-api.${AWS::Region}.amazonaws.com/telemetry'
+
+  ControlRestApiUrl:
+    Description: 'Control Plane Management Base URL (Requires x-api-key)'
+    Value: !Sub 'https://${ControlRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+
+  RogueFunctionName:
+    Description: 'Simulated Target Function Name'
+    Value: !Ref RogueTargetFunction
+
+  KillSwitchStateMachineArn:
+    Description: 'Standard Step Functions State Machine ARN'
+    Value: !Ref KillSwitchStateMachine
+
+  DashboardBucketName:
+    Description: 'S3 Bucket for Dashboard Static Assets'
+    Value: !Ref DashboardBucket
+
+  ForensicBucketName:
+    Description: 'S3 Bucket for Forensic Autopsy Logs'
+    Value: !Ref ForensicBucket
