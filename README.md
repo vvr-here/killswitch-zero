@@ -23,7 +23,8 @@ CloudWatch alarms take **1 to 5 minutes** to evaluate—far too slow to stop a r
 ## 🏗️ Architecture
 
 ```mermaid
-<img> docs/mermaid-diagram.svg</img>
+<img src="docs/mermaid-diagram.svg" alt="diagram" width="200">
+
 ```
 
 ---
