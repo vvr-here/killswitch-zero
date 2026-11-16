@@ -76,7 +76,7 @@ killswitch-zero/
 ├── LICENSE                        # MIT License
 ├── README.md
 │
-├── backend/                       # Python 3.12 Lambda microservices
+├── backend/                       # Python 3.13 Lambda microservices
 │   ├── ingestion/                 # Tumbling window counter & anomaly trigger
 │   ├── quarantine/                # Concurrency clamp (PutFunctionConcurrency=0)
 │   ├── notify_presign/            # S3 autopsy generator & SigV4 signer
